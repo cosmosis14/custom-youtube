@@ -1,0 +1,23 @@
+{
+  "name": "custom-youtube",
+  "version": "1.0.0",
+  "description": "Custom Amazon Alexa skill to play YouTube-sourced audio",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cosmosis14/custom-youtube.git"
+  },
+  "author": "cosmosis14",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/cosmosis14/custom-youtube/issues"
+  },
+  "homepage": "https://github.com/cosmosis14/custom-youtube#readme",
+  "dependencies": {
+    "ask-sdk-core": "^2.8.0",
+    "ask-sdk-model": "^1.28.0"
+  }
+}
