@@ -57,6 +57,7 @@ const StartAudioIntentHandler = {
   async handle(handlerInput) {
     console.log('!!! Handling StartAudioIntent !!!')
     const request = handlerInput.requestEnvelope.request
+    let playbackInfo = await getPlaybackInfo(handlerInput)
 
     if (request.type === 'PlaybackController.PlayCommandIssued') {
       const message = `You just triggered ${request.type}`
@@ -67,7 +68,10 @@ const StartAudioIntentHandler = {
 
     const songName = request.intent.slots.songName.value
     console.log(songName)
+    // I should see this
+    // but I can see this
 
+    playbackInfo.offsetInMilliseconds = 0
     return controller.play(handlerInput)
   }
 }
@@ -135,6 +139,8 @@ const HelpIntentHandler = {
       .getResponse()
   }
 }
+
+// TODO: fix functionality here when music is playing, i.e. set playbackInfo.inPlaybackSession appropriately
 const PausePlaybackHandler = {
   canHandle(handlerInput) {
     const request = handlerInput.requestEnvelope.request
@@ -146,19 +152,73 @@ const PausePlaybackHandler = {
   },
   async handle(handlerInput) {
     console.log('!!! Handling PausePlayback (multi intent) !!!')
-    const playbackInfo = await getPlaybackInfo(handlerInput)
+    // const playbackInfo = await getPlaybackInfo(handlerInput)
 
-    if (playbackInfo.inPlaybackSession) {
-      return controller.stop(handlerInput)
-    } else {
-      const speakOutput = 'Pausing custom youtube'
-      return handlerInput.responseBuilder
-        .speak(speakOutput)
-        .getResponse()
-    }
+    return controller.stop(handlerInput)
 
   }
 }
+
+const AudioPlayerEventHandler = {
+  canHandle(handlerInput) {
+    return handlerInput.requestEnvelope.request.type.startsWith('AudioPlayer.')
+  },
+  async handle(handlerInput) {
+    const {
+      requestEnvelope,
+      attributesManager,
+      responseBuilder
+    } = handlerInput
+    const audioPlayerEventName = requestEnvelope.request.type.split('.')[1]
+    const {
+      playbackInfo
+    } = await attributesManager.getPersistentAttributes()
+
+    switch (audioPlayerEventName) {
+    case 'PlaybackStarted':
+      playbackInfo.token = getToken(handlerInput)
+      // TODO: Need to set playbackInfo.url & playbackInfo.title elsewhere... prob in controller.play
+      playbackInfo.inPlaybackSession = true
+      playbackInfo.hasPreviousPlaybackSession = true
+      break
+    case 'PlaybackFinished':
+      playbackInfo.inPlaybackSession = false
+      playbackInfo.hasPreviousPlaybackSession = false
+      playbackInfo.nextStreamEnqueued = false
+      break
+    case 'PlaybackStopped':
+      playbackInfo.token = getToken(handlerInput)
+      // TODO: Need to set playbackInfo.url & playbackInfo.title elsewhere... prob in controller.play
+      playbackInfo.inPlaybackSession = false
+      playbackInfo.offsetInMilliseconds = getOffsetInMilliseconds(handlerInput)
+      break
+
+    case 'PlaybackNearlyFinished': {
+      if (playbackInfo.nextStreamEnqueued) {
+        break
+      }
+
+      // TODO: Implement auto-play of next song later
+      // playbackInfo.nextStreamEnqueued = true
+
+      // const playBehavior = 'ENQUEUE'
+
+      break
+    }
+
+    case 'PlaybackFailed':
+      playbackInfo.inPlaybackSession = false
+      console.log('Playback Failed: %j', handlerInput.requestEnvelope.request.error)
+      return
+    
+    default:
+      throw new Error('Should never reach default case!')
+    }
+    
+    return responseBuilder.getResponse()
+  }
+}
+
 const SessionEndedRequestHandler = {
   canHandle(handlerInput) {
     return Alexa.getRequestType(handlerInput.requestEnvelope) === 'SessionEndedRequest'
@@ -256,6 +316,29 @@ async function getPlaybackInfo(handlerInput) {
   return attributes.playbackInfo
 }
 
+function getToken(handlerInput) {
+  return handlerInput.requestEnvelope.request.token
+}
+
+function getOffsetInMilliseconds(handlerInput) {
+  return handlerInput.requestEnvelope.request.offsetInMilliseconds
+}
+
+async function ytdlGetSong(videoID) {
+  const ytInfo = await ytdl.getInfo('https://www.youtube.com/watch?v=' + videoID)
+
+  let formats = ytInfo.formats
+  let title = ytInfo.title
+  let url
+  for (const format in formats) {
+    if (formats[format].mimeType.includes('audio/mp4')) {
+      url = formats[format].url
+      break
+    }
+  }
+  return {url, title}
+}
+
 const controller = {
   async play(handlerInput) {
     const {
@@ -270,19 +353,15 @@ const controller = {
       offsetInMilliseconds
     } = playbackInfo
 
+    let videoID = 'fHI8X4OXluQ'
     // Retrieve song info with ytdl
     if (!url || !title) {
-      let videoID = 'fHI8X4OXluQ'
-      const ytInfo = await ytdl.getInfo('https://www.youtube.com/watch?v=' + videoID)
+      const songInfo = await ytdlGetSong(videoID)
+      url = songInfo.url
+      title = songInfo.title
 
-      let formats = ytInfo.formats
-      title = ytInfo.title
-      for (const format in formats) {
-        if (formats[format].mimeType.includes('audio/mp4')) {
-          url = formats[format].url
-          break
-        }
-      }
+      playbackInfo.url = url
+      playbackInfo.title = title
     }
 
     const playBehavior = 'REPLACE_ALL'
@@ -290,7 +369,7 @@ const controller = {
       url: url,
       title: title
     }
-    const token = '1'
+    const token = videoID
     playbackInfo.nextStreamEnqueued = false
 
     responseBuilder
@@ -303,9 +382,11 @@ const controller = {
     return responseBuilder.getResponse()
   },
   stop(handlerInput) {
+    const speakOutput = 'Pausing custom youtube'
     return handlerInput.responseBuilder
+      .speak(speakOutput)
       .addAudioPlayerStopDirective()
-      .getResponse
+      .getResponse()
   }
 }
 
@@ -321,6 +402,7 @@ exports.handler = Alexa.SkillBuilders.custom()
     NoIntentHandler,
     PausePlaybackHandler,
     HelpIntentHandler,
+    AudioPlayerEventHandler,
     SessionEndedRequestHandler,
     IntentReflectorHandler // make sure IntentReflectorHandler is last so it doesn't override your custom intent handlers
   )
