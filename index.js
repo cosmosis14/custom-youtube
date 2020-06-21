@@ -6,7 +6,8 @@ const persistenceAdapter = new DynamoDbPersistenceAdapter({
   tableName: 'CustomYoutubeSettings',
   createTable: true
 })
-const ytdl = require('ytdl-core')
+const Axios = require('axios')
+const Ytdl = require('ytdl-core')
 
 const LaunchRequestHandler = {
   canHandle(handlerInput) {
@@ -68,10 +69,15 @@ const StartAudioIntentHandler = {
 
     const songName = request.intent.slots.songName.value
     console.log(songName)
-    // I should see this
-    // but I can see this
 
+    const videoIds = await axiosGetVideoIds(songName)
+    const songInfo = await ytdlGetSong(videoIds[0])
+
+    playbackInfo.title = songInfo.title
+    playbackInfo.url = songInfo.url
+    playbackInfo.token = videoIds[0]
     playbackInfo.offsetInMilliseconds = 0
+
     return controller.play(handlerInput)
   }
 }
@@ -262,7 +268,6 @@ const ErrorHandler = {
 
     return handlerInput.responseBuilder
       .speak(speakOutput)
-      .reprompt(speakOutput)
       .getResponse()
   }
 }
@@ -324,8 +329,44 @@ function getOffsetInMilliseconds(handlerInput) {
   return handlerInput.requestEnvelope.request.offsetInMilliseconds
 }
 
-async function ytdlGetSong(videoID) {
-  const ytInfo = await ytdl.getInfo('https://www.youtube.com/watch?v=' + videoID)
+async function axiosGetVideoIds(searchParam) {
+  const ytApiUrlBase = 'https://www.googleapis.com/youtube/v3/search?part=snippet'
+
+  const params = {
+    // default order is 'relevance'
+    // orderParamBase: '&order=',
+    // orderParam: 'viewCount',
+
+    searchParamBase: '&q=',
+    searchParam: searchParam,
+
+    typeParamBase: '&type=',
+    typeParam: 'video',
+
+    keyParamBase: '&key=',
+    // keyParam: <UNCOMMENT AND INSERT YOUR YOUTUBE DATA API KEY HERE>
+  }
+
+  let query = ytApiUrlBase
+
+  for (const key in params) {
+    query += params[key]
+  }
+  query = encodeURI(query)
+  console.log(query)
+  
+  const response = await Axios.get(query)
+  // console.log(response.data.items)
+  const responseItems = response.data.items
+  const videoIds = []
+  responseItems.forEach(item => {
+    videoIds.push(item.id.videoId)
+  })
+  return videoIds
+}
+
+async function ytdlGetSong(videoId) {
+  const ytInfo = await Ytdl.getInfo('https://www.youtube.com/watch?v=' + videoId)
 
   let formats = ytInfo.formats
   let title = ytInfo.title
@@ -350,26 +391,15 @@ const controller = {
     let {
       url,
       title,
+      token,
       offsetInMilliseconds
     } = playbackInfo
-
-    let videoID = 'fHI8X4OXluQ'
-    // Retrieve song info with ytdl
-    if (!url || !title) {
-      const songInfo = await ytdlGetSong(videoID)
-      url = songInfo.url
-      title = songInfo.title
-
-      playbackInfo.url = url
-      playbackInfo.title = title
-    }
 
     const playBehavior = 'REPLACE_ALL'
     const song = {
       url: url,
       title: title
     }
-    const token = videoID
     playbackInfo.nextStreamEnqueued = false
 
     responseBuilder
