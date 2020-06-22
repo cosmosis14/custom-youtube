@@ -1,0 +1,7 @@
+ERRORS:
+
+WARNINGS:
+1. When handling a new StartAudioRequest that is received while playback is currently ongoing, the currently playing song will stop, and thus update playbackInfo.offsetInMilliseconds to the current position in the song when it was stopped. This does not create any functional issues, as the play directive already has the correct information, and also, if the new song is stopped, it will update offsetInMilliseconds accordingly. However, it is still a temporary innaccuracy in the data that persists until a new AudioPlayer.PlaybackStopped signal is received.
+
+Possible solves:
+a) Create a new persistent boolean variable that tracks if a new StartAudioRequest has recently been received, and nullify the effects of the PlaybackStopped call if so.
