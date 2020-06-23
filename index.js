@@ -9,6 +9,23 @@ const persistenceAdapter = new DynamoDbPersistenceAdapter({
 const axios = require('axios')
 const ytdl = require('ytdl-core')
 
+// used to stop errors caused by db creation race conditions
+let dbInitializing = false
+const DbInitializingHandler = {
+  // eslint-disable-next-line no-unused-vars
+  canHandle(handlerInput) {
+    return dbInitializing
+  },
+  handle(handlerInput) {
+    dbInitializing = false
+    const speakOutput = 'On first use, this skill takes time to initialize. Please wait ten seconds and then try the skill again. Thank you for your patience'
+    return handlerInput.responseBuilder
+      .speak(ssmlClean(speakOutput))
+      .withShouldEndSession(true)
+      .getResponse()
+  }
+}
+// Check compatibility of device
 const CheckAudioInterfaceHandler = {
   async canHandle(handlerInput) {
     const audioPlayerInterface = ((((handlerInput.requestEnvelope.context || {}).System || {}).device || {}).supportedInterfaces || {}).AudioPlayer
@@ -59,10 +76,6 @@ const StartAudioIntentHandler = {
       request.intent.slots.songName.value
     }
 
-    if (request.type === 'PlaybackController.PlayCommandIssued') {
-      return true
-    }
-
     if (request.type === 'IntentRequest') {
       return request.intent.name === 'StartAudioIntent' &&
         request.intent.slots.songName.value
@@ -73,13 +86,6 @@ const StartAudioIntentHandler = {
     const request = handlerInput.requestEnvelope.request
     let appSettings = await getAppSettings(handlerInput)
     let playbackInfo = await getPlaybackInfo(handlerInput)
-
-    if (request.type === 'PlaybackController.PlayCommandIssued') {
-      const message = `You just triggered ${request.type}`
-      return handlerInput.responseBuilder
-        .speak(ssmlClean(message))
-        .getResponse()
-    }
 
     const songName = request.intent.slots.songName.value
     console.log(songName)
@@ -98,12 +104,14 @@ const StartAudioIntentHandler = {
   }
 }
 
+// Designed to answer LaunchRequest prompts, but can be used to resume play as well
 const YesIntentHandler = {
   async canHandle(handlerInput) {
-    const playbackInfo = await getPlaybackInfo(handlerInput)
+    const appSettings = await getAppSettings(handlerInput)
     const request = handlerInput.requestEnvelope.request
 
-    return !playbackInfo.inPlaybackSession &&
+    return !appSettings.inPlaybackSession &&
+      appSettings.hasPreviousPlaybackSession &&
       request.type === 'IntentRequest' &&
       request.intent.name === 'AMAZON.YesIntent'
   },
@@ -113,12 +121,13 @@ const YesIntentHandler = {
   }
 }
 
+// Designed to answer LaunchRequest prompts, but can be used to start a new search as well
 const NoIntentHandler = {
   async canHandle(handlerInput) {
-    const playbackInfo = await getPlaybackInfo(handlerInput)
+    const appSettings = await getAppSettings(handlerInput)
     const request = handlerInput.requestEnvelope.request
 
-    return !playbackInfo.inPlaybackSession &&
+    return !appSettings.inPlaybackSession &&
       request.type === 'IntentRequest' &&
       request.intent.name === 'AMAZON.NoIntent'
   },
@@ -154,7 +163,7 @@ const HelpIntentHandler = {
   },
   handle(handlerInput) {
     console.log('!!! Handling HelpIntent !!!')
-    const speakOutput = 'The help intent will be implemented soon'
+    const speakOutput = 'This is an app to play youtube-sourced audio on alexa devices. To play audio from youtube, say alexa, ask custom youtube to play, followed by a song name, or other search term. You may also say next, previous, or start over, to edit the currently playing track. You can also ask custom youtube to repeat this song in order to put the current song on repeat mode, and replay until you tell it to stop. Saying custom youtube repeat off will cancel this. Lastly you can say ask custom youtube what song is this to get the title of the youtube video that the audio was sourced from.'
 
     return handlerInput.responseBuilder
       .speak(ssmlClean(speakOutput))
@@ -236,14 +245,10 @@ const NextIntentHandler = {
       } else {
 
         // get video id and songInfo after calculating the new index
-        let newIndex
-        if (playbackInfo.index < appSettings.videoIds.length - 1) {
-          newIndex = playbackInfo.index + 1
-        } else {
-          newIndex = 0
-        }
+        let newIndex = await getNextIndex(handlerInput)
         const newVideoId = appSettings.videoIds[newIndex]
         const newSongInfo = await ytdlGetSong(newVideoId)
+
         playbackInfo.index = newIndex
         playbackInfo.url = newSongInfo.url
         playbackInfo.title = newSongInfo.title
@@ -358,6 +363,64 @@ const RepeatOnIntentHandler = {
   }
 }
 
+const RepeatOffIntentHandler = {
+  canHandle(handlerInput) {
+    const request = handlerInput.requestEnvelope.request
+    return request.type === 'IntentRequest' &&
+        request.intent.name === 'RepeatOffIntent'
+  },
+  async handle(handlerInput) {
+    const appSettings = await getAppSettings(handlerInput)
+
+    let speakOutput
+    if (!appSettings.inPlaybackSession) {
+      speakOutput = 'No music is currently playing, cannot change repeat mode'
+
+      return handlerInput.responseBuilder
+        .speak(ssmlClean(speakOutput))
+        .withShouldEndSession(true)
+        .getResponse()
+    } else if (!appSettings.repeatMode) {
+      speakOutput = 'Repeat mode is already turned off'
+
+      return handlerInput.responseBuilder
+        .speak(ssmlClean(speakOutput))
+        .withShouldEndSession(true)
+        .getResponse()
+    } else {
+      speakOutput = 'Repeat mode is now turned off'
+
+      const playbackInfo = await getPlaybackInfo(handlerInput)
+      const nextPlaybackInfo = await getNextPlaybackInfo(handlerInput)
+      appSettings.repeatMode = false
+
+      // get the info for the next song after calculating next index and videoId
+      let enqueueVideoIndex = await getNextIndex(handlerInput)
+      const enqueueVideoId = appSettings.videoIds[enqueueVideoIndex]
+      let enqueVideoSongInfo
+      enqueVideoSongInfo = await ytdlGetSong(enqueueVideoId)
+      enqueVideoSongInfo = {
+        url: playbackInfo.url,
+        title: playbackInfo.title
+      }
+
+      // set nextPlaybackInfo and then use those values to queue the next song
+      const playBehavior = 'REPLACE_ENQUEUED'
+      nextPlaybackInfo.index = enqueueVideoIndex
+      nextPlaybackInfo.url = enqueVideoSongInfo.url
+      nextPlaybackInfo.title = enqueVideoSongInfo.title
+      nextPlaybackInfo.token = enqueueVideoId.token
+      nextPlaybackInfo.offsetInMilliseconds = 0
+
+      return handlerInput.responseBuilder
+        .speak(ssmlClean(speakOutput))
+        .addAudioPlayerPlayDirective(playBehavior, nextPlaybackInfo.url, nextPlaybackInfo.token, nextPlaybackInfo.offsetInMilliseconds)
+        .withShouldEndSession(true)
+        .getResponse()
+    }
+  }
+}
+
 const SongInfoIntentHandler = {
   canHandle(handlerInput) {
     const request = handlerInput.requestEnvelope.request
@@ -420,12 +483,13 @@ const AudioPlayerEventHandler = {
     const request = handlerInput.requestEnvelope.request
     const audioPlayerEventName = request.type.split('.')[1]
     const appSettings = await getAppSettings(handlerInput)
-    let playbackInfo = await getPlaybackInfo(handlerInput)
+    const playbackInfo = await getPlaybackInfo(handlerInput)
     const nextPlaybackInfo = await getNextPlaybackInfo(handlerInput)
 
     switch (audioPlayerEventName) {
     case 'PlaybackStarted':
       console.log('!!! Handling PlaybackStarted !!!')
+      appSettings.hasPreviousPlaybackSession = false
 
       // If we are now playing the next enqueued song, update the stored info
       if (playbackInfo.token !== request.token && nextPlaybackInfo.token === request.token) {
@@ -433,16 +497,16 @@ const AudioPlayerEventHandler = {
         playbackInfo.url = nextPlaybackInfo.url
         playbackInfo.title = nextPlaybackInfo.title
         playbackInfo.token = nextPlaybackInfo.token
+        playbackInfo.offsetInMilliseconds = nextPlaybackInfo.offsetInMilliseconds
       }
       break
     case 'PlaybackFinished':
-      appSettings.inPlaybackSession = false
-      appSettings.hasPreviousPlaybackSession = false
       appSettings.nextStreamEnqueued = false
       break
     case 'PlaybackStopped':
       // This functionality for playback resume is mostly handled in the PausePlaybackHandler
       appSettings.latestOffsetInMilliseconds = getOffsetInMilliseconds(handlerInput)
+      appSettings.hasPreviousPlaybackSession = true
       break
 
     case 'PlaybackNearlyFinished': {
@@ -455,28 +519,38 @@ const AudioPlayerEventHandler = {
 
       let enqueueVideoIndex
       if (appSettings.repeatMode) {
+        // replay same song
         enqueueVideoIndex = playbackInfo.index
-      } else if (playbackInfo.index < appSettings.videoIds.length - 1) {
-        enqueueVideoIndex = playbackInfo.index + 1
       } else {
-        enqueueVideoIndex = 0
+        // get next song's index
+        enqueueVideoIndex = await getNextIndex(handlerInput)
       }
       const enqueueVideoId = appSettings.videoIds[enqueueVideoIndex]
-
       let enqueVideoSongInfo
       if (!appSettings.repeatMode) {
+        // new song data
+        // console.log(`index is: ${enqueueVideoIndex}\nvideoId is: ${enqueueVideoId}`)
         enqueVideoSongInfo = await ytdlGetSong(enqueueVideoId)
       } else {
+        // current song data (in repeat mode)
         enqueVideoSongInfo = {
           url: playbackInfo.url,
           title: playbackInfo.title
         }
       }
+
       const playBehavior = 'ENQUEUE'
       const enqueueVideoUrl = enqueVideoSongInfo.url
       const enqueueToken = enqueueVideoId
       const offsetInMilliseconds = 0
       const expectedPreviousToken = playbackInfo.token
+
+      // set nextPlaybackInfo values
+      nextPlaybackInfo.index = enqueueVideoIndex
+      nextPlaybackInfo.title = enqueVideoSongInfo.title
+      nextPlaybackInfo.url = enqueueVideoUrl
+      nextPlaybackInfo.token = enqueueToken
+      nextPlaybackInfo.offsetInMilliseconds = offsetInMilliseconds
 
       handlerInput.responseBuilder.addAudioPlayerPlayDirective(
         playBehavior,
@@ -485,17 +559,13 @@ const AudioPlayerEventHandler = {
         offsetInMilliseconds,
         expectedPreviousToken
       )
-
-      // TODO: SETUP different persistent object for enqueue info, and then on playbackstarted, set current playbackInfo object details 
-      nextPlaybackInfo.index = enqueueVideoIndex
-      nextPlaybackInfo.title = enqueVideoSongInfo.title
-      nextPlaybackInfo.url = enqueueVideoUrl
-      nextPlaybackInfo.token = enqueueToken
       break
     }
 
     case 'PlaybackFailed':
-      playbackInfo.inPlaybackSession = false
+      appSettings.hasPreviousPlaybackSession = false
+      appSettings.inPlaybackSession = false
+      appSettings.nextStreamEnqueued = false
       console.log('Playback Failed: %j', handlerInput.requestEnvelope.request.error)
       return
     
@@ -566,20 +636,36 @@ const IntentReflectorHandler = {
 
 /* INTERCEPTORS */
 const LoadPersistentAttributesRequestInterceptor = {
+  /**
+   * Set initial persistent attributes data and log request info
+   * @param {import('ask-sdk-core').HandlerInput} handlerInput
+   */
   async process(handlerInput) {
     console.log('!!! Intercepting Request !!!')
     console.log(handlerInput.requestEnvelope.request)
-    const persistentAttributes = await handlerInput.attributesManager.getPersistentAttributes()
-    
-    // console.log(`persistentAttributes is ${persistentAttributes}`)
-    // Check if user is invoking the skill the first time and initialize values
-    if (Object.keys(persistentAttributes).length === 0) {
-      resetAttributes(handlerInput)
-    }
+    // console.log(handlerInput.requestEnvelope)
+
+    let persistentAttributes
+    try {
+      persistentAttributes = await handlerInput.attributesManager.getPersistentAttributes()
+
+      // Check if user is invoking the skill the first time and initialize values
+      if (Object.keys(persistentAttributes).length === 0) {
+        resetAttributes(handlerInput)
+      }
+      // Error will throw if the database is not initialized yet
+    } catch (error) {
+      console.log(error)
+      dbInitializing = true
+    }    
   }
 }
 
 const SavePersistentAttributesResponseInterceptor = {
+  /**
+   * Save persistent attributes before sending every response
+   * @param {import('ask-sdk-core').HandlerInput} handlerInput
+   */
   async process(handlerInput) {
     console.log('!!! Intercepting Response !!!')
     await handlerInput.attributesManager.savePersistentAttributes()
@@ -588,23 +674,66 @@ const SavePersistentAttributesResponseInterceptor = {
 
 /* HELPER FUNCTIONS: */
 
+/**
+ * Returns the appSettings object
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput
+ * @returns {Promise<{hasPreviousPlaybackSession: boolean, inPlaybackSession: boolean, nextStreamEnqueued: boolean, repeatMode: boolean, latestOffsetInMilliseconds: number, videoIds: string[]}>} appSettings - the persistent attribute object that represents skill-wide settings
+ */
 async function getAppSettings(handlerInput) {
   const attributes = await handlerInput.attributesManager.getPersistentAttributes()
   return attributes.appSettings
 }
+/**
+ * Returns the playbackInfo object
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput
+ * @returns {Promise<{index: number, offsetInMilliseconds: number, title: string, url: string, token: string}>} playbackInfo - the persistent attribute object that represents characteristics of the currently playing (or paused) audio track
+ */
 async function getPlaybackInfo(handlerInput) {
   const attributes = await handlerInput.attributesManager.getPersistentAttributes()
   return attributes.playbackInfo
 }
+/**
+ * Returns the nextPlaybackInfo object
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput
+ * @returns {Promise<{index: number, offsetInMilliseconds: number, title: string, url: string, token: string}>} nextPlaybackInfo - the persistent attribute object that represents characteristics of the enqueued audio track
+ */
 async function getNextPlaybackInfo(handlerInput) {
   const attributes = await handlerInput.attributesManager.getPersistentAttributes()
   return attributes.nextPlaybackInfo
 }
-
+/**
+ * Returns the offsetInMilliseconds of the AudioPlayer.Playback* request included in the handlerInput 
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput
+ * @returns {number} offsetInMilliseconds - time offset for the audio track
+ */
 function getOffsetInMilliseconds(handlerInput) {
   return handlerInput.requestEnvelope.request.offsetInMilliseconds
 }
 
+/**
+ * Returns the next index for the videoId to be played (ascending order in the videoId array)
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput 
+ * @returns {Promise<number>} nextIndex - the index of the next videoId to fetch from youtube
+ */
+async function getNextIndex(handlerInput) {
+  const appSettings = await getAppSettings(handlerInput)
+  const playbackInfo = await getPlaybackInfo(handlerInput)
+
+  let newIndex
+  if (playbackInfo.index < appSettings.videoIds.length - 1) {
+    newIndex = playbackInfo.index + 1
+  } else {
+    newIndex = 0
+  }
+
+  return newIndex
+}
+
+/**
+ * Returns an array of youtube video ids from a youtube data api call with the search query param defined by searchParam
+ * @param {string} searchParam - the search query param for the api call
+ * @returns {Promise<string[]>} videoIds
+ */
 async function axiosGetVideoIds(searchParam) {
   const ytApiUrlBase = 'https://www.googleapis.com/youtube/v3/search?part=snippet'
 
@@ -619,6 +748,7 @@ async function axiosGetVideoIds(searchParam) {
     typeParamBase: '&type=',
     typeParam: 'video',
 
+    // change length of videoIds here, max is 50
     maxResultsParam: '&maxResults=',
     maxResults: 20,
 
@@ -628,6 +758,7 @@ async function axiosGetVideoIds(searchParam) {
 
   let query = ytApiUrlBase
 
+  // construct query
   for (const key in params) {
     query += params[key]
   }
@@ -644,6 +775,11 @@ async function axiosGetVideoIds(searchParam) {
   return videoIds
 }
 
+/**
+ * Takes a youtube videoId and returns a url where the audio for that video is hosted, as well as the title of the original video
+ * @param {string} videoId - youtube videoId; e.g https://www.youtube.com/watch?v=[videoId]
+ * @returns {Promise<{url: string, title: string}>} object with two key-value pairs representing audio 'url' and 'title'
+ */
 async function ytdlGetSong(videoId) {
   const ytInfo = await ytdl.getInfo('https://www.youtube.com/watch?v=' + videoId)
 
@@ -659,6 +795,11 @@ async function ytdlGetSong(videoId) {
   return {url, title}
 }
 
+/**
+ * Cleans a string of any characters that could potentially break alexa's SSML interpreter
+ * @param {string} inString 
+ * @returns {string} outString - cleaned version of inString
+ */
 function ssmlClean(inString) {
   let outString = inString.replace(/&/g, '&amp;')
   outString = outString.replace(/"/g, '&quot;')
@@ -669,6 +810,10 @@ function ssmlClean(inString) {
   return outString
 }
 
+/**
+ * Resets the persistent attributes in the dynamodb to default values. Used for initialization, debugging, and reference of what persistent attributes should exist in the database.
+ * @param {import('ask-sdk-core').HandlerInput} handlerInput
+ */
 function resetAttributes(handlerInput) {
   handlerInput.attributesManager.setPersistentAttributes({
     appSettings: {
@@ -698,11 +843,16 @@ function resetAttributes(handlerInput) {
 }
 
 const controller = {
+  /**
+   * Handles the creation of a response with an AudioPlayerPlayDirective, relying on previously set playbackInfo values. Also updates certain appSettings to maintain correct state of the skill. 
+   * @param {import('ask-sdk-core').HandlerInput} handlerInput 
+   * @returns {Promise<import('ask-sdk-model').Response>} alexa response object
+   */
   async play(handlerInput) {
     const responseBuilder = handlerInput.responseBuilder
 
-    const playbackInfo = await getPlaybackInfo(handlerInput)
     const appSettings = await getAppSettings(handlerInput)
+    const playbackInfo = await getPlaybackInfo(handlerInput)
     let {
       url,
       title,
@@ -726,6 +876,11 @@ const controller = {
     
     return responseBuilder.getResponse()
   },
+  /**
+   * Handles the creation of a response with an AudioPlayerStopDirective
+   * @param {import('ask-sdk-core').HandlerInput} handlerInput 
+   * @returns {import('ask-sdk-model').Response} alexa response object
+   */
   stop(handlerInput) {
     const speakOutput = 'Pausing custom youtube'
     return handlerInput.responseBuilder
@@ -742,6 +897,7 @@ const controller = {
 // defined are included below. The order matters - they're processed top to bottom.
 exports.handler = alexa.SkillBuilders.custom()
   .addRequestHandlers(
+    DbInitializingHandler,
     CheckAudioInterfaceHandler,
     LaunchRequestHandler,
     StartAudioIntentHandler,
@@ -754,6 +910,7 @@ exports.handler = alexa.SkillBuilders.custom()
     PreviousIntentHandler,
     StartOverIntentHandler,
     RepeatOnIntentHandler,
+    RepeatOffIntentHandler,
     SongInfoIntentHandler,
     ResetIntentHandler,
     AudioPlayerEventHandler,
