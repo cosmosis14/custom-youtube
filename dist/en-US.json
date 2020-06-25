@@ -1,0 +1,134 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "custom youtube",
+      "modelConfiguration": {
+        "fallbackIntentSensitivity": {
+          "level": "LOW"
+        }
+      },
+      "intents": [
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NavigateHomeIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.PauseIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.ResumeIntent",
+          "samples": []
+        },
+        {
+          "name": "StartAudioIntent",
+          "slots": [
+            {
+              "name": "songName",
+              "type": "AMAZON.MusicRecording"
+            }
+          ],
+          "samples": [
+            "to find {songName}",
+            "find {songName}",
+            "to stream {songName}",
+            "stream {songName}",
+            "to play {songName}",
+            "play {songName}"
+          ]
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NextIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.PreviousIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StartOverIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.RepeatIntent",
+          "samples": []
+        },
+        {
+          "name": "RepeatOnIntent",
+          "slots": [],
+          "samples": [
+            "repeat on",
+            "to turn repeat on",
+            "to repeat",
+            "to repeat this song",
+            "repeat this song"
+          ]
+        },
+        {
+          "name": "SongInfoIntent",
+          "slots": [],
+          "samples": [
+            "what song this is",
+            "to get song info",
+            "get song info",
+            "song info",
+            "what is this",
+            "tell me the name of the song",
+            "what is the current song",
+            "what song is playing",
+            "what is the song name",
+            "song name",
+            "what is the name of this song",
+            "who sings this song",
+            "what song is this"
+          ]
+        },
+        {
+          "name": "ResetIntent",
+          "slots": [],
+          "samples": [
+            "to reset data",
+            "reset data",
+            "to reset",
+            "reset"
+          ]
+        },
+        {
+          "name": "RepeatOffIntent",
+          "slots": [],
+          "samples": [
+            "stop repeating",
+            "to turn repeat off",
+            "turn repeat off",
+            "repeat off"
+          ]
+        }
+      ],
+      "types": []
+    }
+  }
+}
