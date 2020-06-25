@@ -18,6 +18,7 @@
   "homepage": "https://github.com/cosmosis14/custom-youtube#readme",
   "dependencies": {
     "ask-sdk-core": "^2.8.0",
+    "ask-sdk-dynamodb-persistence-adapter": "^2.8.0",
     "ask-sdk-model": "^1.28.0",
     "axios": "^0.19.2",
     "ytdl-core": "^2.1.7"
