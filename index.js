@@ -784,7 +784,7 @@ async function ytdlGetSong(videoId) {
   const ytInfo = await ytdl.getInfo('https://www.youtube.com/watch?v=' + videoId)
 
   let formats = ytInfo.formats
-  let title = ytInfo.title
+  let title = ytInfo.videoDetails.title
   let url
   for (const format in formats) {
     if (formats[format].mimeType.includes('audio/mp4')) {
