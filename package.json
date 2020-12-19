@@ -21,6 +21,6 @@
     "ask-sdk-dynamodb-persistence-adapter": "^2.8.0",
     "ask-sdk-model": "^1.28.0",
     "axios": "^0.19.2",
-    "ytdl-core": "^4.0.0"
+    "ytdl-core": "^4.2.1"
   }
 }
